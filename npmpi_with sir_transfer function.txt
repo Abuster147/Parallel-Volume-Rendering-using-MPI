@@ -1,0 +1,189 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <string>
+#include <opencv2/opencv.hpp>
+#include <chrono>
+
+using namespace std;
+using namespace cv;
+
+// Function to read the dataset and reshape it
+void readDataset(const std::string& filename, std::vector<float>& data, int& xDim, int& yDim, int& zDim) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open dataset file.");
+    }
+
+    // Set dimensions for example
+    xDim = 1000;
+    yDim = 1000;
+    zDim = 200;
+
+    size_t totalSize = static_cast<size_t>(xDim) * yDim * zDim;
+    data.resize(totalSize);
+
+    file.read(reinterpret_cast<char*>(data.data()), totalSize * sizeof(float));
+    file.close();
+}
+
+// Transfer function for opacity based on intensity
+float opacityTF(float intensity) {
+    const float intensityLevels[] = {-4926.59, -1310.07, 103.00, 2593.85};
+    const float opacities[] = {1.0, 0.75, 0.0, 0.05};
+    const int n = sizeof(intensityLevels) / sizeof(intensityLevels[0]);
+
+    if (intensity <= intensityLevels[0]) return opacities[0];
+    if (intensity >= intensityLevels[n - 1]) return opacities[n - 1];
+
+    // Linear interpolation
+    for (int i = 0; i < n - 1; ++i) {
+        if (intensity >= intensityLevels[i] && intensity <= intensityLevels[i + 1]) {
+            float t = (intensity - intensityLevels[i]) / (intensityLevels[i + 1] - intensityLevels[i]);
+            return opacities[i] + t * (opacities[i + 1] - opacities[i]);
+        }
+    }
+    return 0.0f; // Default if no match
+}
+
+// Transfer function for color (RGB) based on intensity
+vector<int> colorTF(float intensity) {
+    const float intensityArray[] = {-4926.593, -4803.331, -4680.069, -4556.807, -4433.545, -4310.283, -4187.021,
+                                    -4063.759, -3940.498, -3817.236, -3693.974, -3570.712, -3447.450, -3324.188,
+                                    -3200.926, -3077.664, -2954.402, -2831.140, -2707.878, -2584.616, -2466.285,
+                                    -2461.354, -2461.279, -2333.275, -2205.271, -2077.268, -1949.264, -1821.260,
+                                    -1693.256, -1565.252, -1437.248, -1309.245, -1181.241, -1053.237, -925.233,
+                                    -797.229, -669.226, -541.222, -413.218, -285.214, -157.210, -29.206, 98.873,
+                                    348.371, 597.868, 847.366, 1096.864, 1346.362, 1595.860, 1845.358, 2094.856,
+                                    2344.354, 2469.103, 2593.852};
+    
+    const float R[] = {0.302, 0.396, 0.494, 0.588, 0.663, 0.741, 0.788, 0.863, 0.902, 0.918, 0.925, 0.937,
+                       0.945, 0.953, 0.965, 0.969, 0.973, 0.980, 0.980, 0.988, 0.984, 0.988, 0.953, 0.890,
+                       0.827, 0.776, 0.725, 0.678, 0.631, 0.580, 0.537, 0.498, 0.463, 0.431, 0.404, 0.373,
+                       0.345, 0.318, 0.286, 0.255, 0.231, 0.200, 0.149, 0.200, 0.247, 0.306, 0.373, 0.443,
+                       0.518, 0.600, 0.686, 0.761, 0.808, 0.890};
+
+    const float G[] = {0.047, 0.039, 0.055, 0.114, 0.169, 0.227, 0.290, 0.380, 0.459, 0.522, 0.580, 0.643,
+                       0.710, 0.769, 0.827, 0.878, 0.918, 0.949, 0.973, 0.988, 0.988, 0.988, 0.953, 0.890,
+                       0.827, 0.776, 0.725, 0.678, 0.631, 0.580, 0.537, 0.498, 0.463, 0.431, 0.404, 0.373,
+                       0.345, 0.318, 0.286, 0.255, 0.231, 0.200, 0.196, 0.255, 0.318, 0.388, 0.459, 0.533,
+                       0.616, 0.698, 0.784, 0.859, 0.902, 0.957};
+
+    const float B[] = {0.090, 0.059, 0.035, 0.024, 0.016, 0.004, 0.0, 0.012, 0.027, 0.047, 0.078, 0.122,
+                       0.184, 0.247, 0.325, 0.400, 0.478, 0.557, 0.624, 0.706, 0.784, 0.859, 0.890, 0.890,
+                       0.827, 0.776, 0.725, 0.678, 0.631, 0.580, 0.537, 0.498, 0.463, 0.431, 0.404, 0.373,
+                       0.345, 0.318, 0.286, 0.255, 0.231, 0.200, 0.196, 0.255, 0.318, 0.388, 0.459, 0.533,
+                       0.616, 0.698, 0.784, 0.859, 0.902, 0.957};
+
+    // Perform interpolation to find the color
+    vector<int> resultColor(3, 0); // Resulting color in R, G, B
+    const int size = sizeof(intensityArray) / sizeof(intensityArray[0]);
+
+    // Find the two closest data points
+    for (int i = 0; i < size - 1; ++i) {
+        if (intensity >= intensityArray[i] && intensity <= intensityArray[i + 1]) {
+            float t = (intensity - intensityArray[i]) / (intensityArray[i + 1] - intensityArray[i]);
+            resultColor[0] = static_cast<int>(R[i] * (1 - t) + R[i + 1] * t);
+            resultColor[1] = static_cast<int>(G[i] * (1 - t) + G[i + 1] * t);
+            resultColor[2] = static_cast<int>(B[i] * (1 - t) + B[i + 1] * t);
+            break;
+        }
+    }
+
+    return resultColor;
+}
+
+// Function to perform ray casting
+Mat rayCastingRender(const std::vector<float>& data, int xDim, int yDim, int zDim, int width, int height, float stepSize = 1.0f) {
+    Mat renderedImage(height, width, CV_8UC3, Scalar(0, 0, 0));
+
+    // Precompute image dimensions
+    float xRatio = static_cast<float>(xDim) / width;
+    float yRatio = static_cast<float>(yDim) / height;
+
+    // Step through each pixel of the rendered image
+    for (int px = 0; px < width; ++px) {
+        for (int py = 0; py < height; ++py) {
+            float xPos = px * xRatio;
+            float yPos = py * yRatio;
+
+            // Ray direction
+            Vec3f rayDir(cos(px * 2 * M_PI / width), sin(px * 2 * M_PI / width), 1.0f);
+
+            float r = 0, g = 0, b = 0;
+            float alpha = 0;
+
+            // Ray casting loop
+            for (float t = 0; t < zDim; t += stepSize) {
+                int x = static_cast<int>(xPos);
+                int y = static_cast<int>(yPos);
+                int z = static_cast<int>(t);
+
+                // Ensure we stay within bounds
+                if (x >= 0 && x < xDim && y >= 0 && y < yDim && z >= 0 && z < zDim) {
+                    int index = x + y * xDim + z * xDim * yDim;
+                    float intensity = data[index];
+                    float opacity = opacityTF(intensity);
+                    vector<int> color = colorTF(intensity);
+
+                    r += color[0] * opacity;
+                    g += color[1] * opacity;
+                    b += color[2] * opacity;
+                    alpha += opacity;
+
+                    if (alpha >= 1.0f) break;
+                }
+            }
+
+            // Normalize colors
+            if (alpha > 0) {
+                r /= alpha;
+                g /= alpha;
+                b /= alpha;
+            }
+
+            // Assign color to pixel
+            renderedImage.at<Vec3b>(height - py - 1, px) = Vec3b(static_cast<uchar>(b), static_cast<uchar>(g), static_cast<uchar>(r));
+        }
+    }
+
+    return renderedImage;
+}
+
+int main() {
+    std::vector<float> data;
+    int xDim, yDim, zDim;
+
+    try {
+        // Load the dataset
+        readDataset("Isabel_1000x1000x200_float32.raw", data, xDim, yDim, zDim);
+
+        // Set output image dimensions
+        int width = 800;
+        int height = 600;
+
+        // Start timing
+        auto start = std::chrono::high_resolution_clock::now();
+
+        // Perform ray casting
+        Mat result = rayCastingRender(data, xDim, yDim, zDim, width, height);
+
+        // End timing
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<float> duration = end - start;
+        std::cout << "Ray casting completed in " << duration.count() << " seconds" << std::endl;
+
+        // Save the result
+        imwrite("output.png", result);
+
+        // Display the result
+        imshow("Ray Casting Result", result);
+        waitKey(0);
+
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    return 0;
+}

@@ -1,0 +1,629 @@
+#include <mpi.h>
+#include <vector>
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <chrono>
+#include <cstring>
+#include <cmath>
+#include <tuple>
+#include <png.h>
+#include <algorithm> // For std::min_element and std::max_element
+#include <sstream> 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include <string>
+#include <iomanip>
+#include <sstream>
+
+using namespace std;
+
+
+
+float interpolate(float x[], float y[], float a) {
+    int n = 4;
+
+    // Handle edge cases where 'a' is outside the given range
+    int i = 0;
+    while (i < n - 1) {
+        float interval_start = x[i];     // x[i]
+        float interval_end = x[i + 1];   // x[i + 1]
+        float value_start = y[i];        // y[i]
+        float value_end = y[i + 1];      // y[i + 1]
+
+        // Check if 'a' lies between the current interval [x[i], x[i + 1]]
+        if (a >= interval_start && a <= interval_end) {
+            // Linear interpolation factor
+            float t = (a - interval_start) / (interval_end - interval_start);
+
+            // Interpolate and return the value
+            float interpolated_value = value_start + t * (value_end - value_start);
+            return interpolated_value;
+        }
+        
+        // Increment to move to the next interval
+        ++i;
+    }
+
+    // Should never reach here
+    return 0.0f;
+}
+
+float interpolate2(float x[], float y[], float a) {
+    int n = 55;
+
+    // Handle edge cases where 'a' is outside the given range
+    int i = 0;
+    while (i < n - 1) {
+        float interval_start = x[i];     // x[i]
+        float interval_end = x[i + 1];   // x[i + 1]
+        float value_start = y[i];        // y[i]
+        float value_end = y[i + 1];      // y[i + 1]
+
+        // Check if 'a' lies between the current interval [x[i], x[i + 1]]
+        if (a >= interval_start && a <= interval_end) {
+            // Linear interpolation factor
+            float t = (a - interval_start) / (interval_end - interval_start);
+
+            // Interpolate and return the value
+            float interpolated_value = value_start + t * (value_end - value_start);
+            return interpolated_value;
+        }
+        
+        // Increment to move to the next interval
+        ++i;
+    }
+
+    // Should never reach here
+    return 0.0f;
+}
+
+void readColorData(const std::string& filename,float intensity[],float R[],float G[],float B[] ) {
+    std::ifstream file(filename);
+    if (!file) {
+        std::cerr << "Error opening file!" << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    // Read entire file into a string buffer
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string content = buffer.str();
+
+    // Close the file
+    file.close();
+
+    // Use a stringstream to parse the file content
+    
+    size_t intensity1Size = 0;
+    size_t R1Size = 0;
+    size_t G1Size = 0;
+    size_t B1Size = 0;
+
+    // Use a stringstream to parse the file content
+    std::stringstream ss(content);
+    std::string item;
+
+    size_t index = 0;
+    while (std::getline(ss, item, ',')) {
+        // Remove any extra whitespace
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+
+        try {
+            // Convert string to float
+            float num = std::stof(item);
+
+            // Distribute into the corresponding array based on index
+            if (index % 4 == 0) {
+                if (intensity1Size < 55) {
+                    intensity[intensity1Size++] = num;
+                }
+            } else if (index % 4 == 1) {
+                if (R1Size < 55) {
+                    R[R1Size++] = num;
+                }
+            } else if (index % 4 == 2) {
+                if (G1Size < 55) {
+                    G[G1Size++] = num;
+                }
+            } else if (index % 4 == 3) {
+                if (B1Size < 55) {
+                    B[B1Size++] = num;
+                }
+            }
+            
+            index++;
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "Invalid argument: " << item << " - " << e.what() << std::endl;
+        } catch (const std::out_of_range& e) {
+            std::cerr << "Out of range: " << item << " - " << e.what() << std::endl;
+        }
+    }
+    // for(int k=0;k<55;k++){
+       
+    //     cout<<B[k]<<" ";
+    // }
+   
+}
+
+float opacityTF(float a){
+
+    float intensity2[] = {-4926.59326171875, -1310.073486328125, 103.00382995605469, 2593.85205078125};
+    //float opacity[] = {0.0, 0.75641030073165894, 0.0, 0.053846154361963272};
+    float opacity[] = {0.8, 0.75641030073165894, 0.0, 0.053846154361963272};
+
+    if (a <= intensity2[0]) return 0.5f;
+    if (a >= intensity2[3]) return 0.05f;
+
+    return interpolate(intensity2, opacity, a);
+}
+
+float interpolate3(float z, int zIdx, int zNext, int x, int y, int yDim, const std::vector<float>& data) {
+
+    float weight1 = (zNext - z) / (zNext - zIdx);
+    float weight2 = (z - zIdx) / (zNext - zIdx);
+
+    // Calculate indices for the data
+    int idx1 = (zIdx * yDim + y) * 1000 + x;
+    int idx2 = (zNext * yDim + y) * 1000 + x;
+
+    // Perform interpolation using weighted average
+    float interpolatedData = weight1 * data[idx1] + weight2 * data[idx2];
+    
+    return interpolatedData;
+}
+
+std::vector<float> colorTF(float a,float intensity[],float R[],float G[],float B[]) {
+
+    int n = 55; // Calculate the size of intensity array
+
+    // Handle edge cases: return first or last color if 'a' is out of bounds
+    if (a <= intensity[0]) return std::vector<float>({(R[0]), (G[0]), (B[0])});
+    if (a >= intensity[n - 1]) return std::vector<float>({(R[n - 1]), (G[n - 1]), (B[n - 1])});
+
+    // Interpolate for each of the RGB channels using the interpolate function
+    float red = interpolate2(intensity, R, a);
+    float green = interpolate2(intensity, G, a);
+    float blue = interpolate2(intensity, B, a);
+
+    // Return the interpolated color as a vector
+    return std::vector<float>{red, green, blue};
+}
+
+
+
+void saveImageFromVector(const std::vector<float>& data, int width, int height, int channels, const std::string& filename) {
+    if (channels != 3 && channels != 4) {
+        std::cerr << "Error: Only RGB and RGBA images are supported." << std::endl;
+        return;
+    }
+
+    // Ensure the data is normalized to 0-255 range
+    std::vector<unsigned char> imageData(data.size());
+    float minVal = *std::min_element(data.begin(), data.end());
+    float maxVal = *std::max_element(data.begin(), data.end());
+
+    for (size_t i = 0; i < data.size(); ++i) {
+        imageData[i] = static_cast<unsigned char>(255 * (data[i] - minVal) / (maxVal - minVal));
+    }
+
+    // Swap Red and Blue channels if working with RGB (i.e., channels == 3)
+    if (channels == 3) {
+        for (size_t i = 0; i < imageData.size(); i += 3) {
+            std::swap(imageData[i], imageData[i + 2]); // Swap R and B
+        }
+    }
+
+    // Flip the image vertically and horizontally (mirror image from left to right)
+    std::vector<unsigned char> transformedData(data.size());
+    int rowSize = width * channels;
+
+    for (int row = 0; row < height; ++row) {
+        int srcRowIndex = row * rowSize;
+        int destRowIndex = (height - row - 1) * rowSize;
+        for (int col = 0; col < width; ++col) {
+            int srcIndex = srcRowIndex + col * channels;
+            int destIndex = destRowIndex + (width - col - 1) * channels;
+            std::copy(imageData.begin() + srcIndex, imageData.begin() + srcIndex + channels,
+                      transformedData.begin() + destIndex);
+        }
+    }
+
+    // Save the transformed image using stb_image_write
+    int result = stbi_write_png(filename.c_str(), width, height, channels, transformedData.data(), width * channels);
+
+    if (result == 0) {
+        std::cerr << "Error: Could not write image to file " << filename << std::endl;
+    }
+}
+
+
+
+void loadVolumeData(const std::string& filePath, std::vector<float>& volumeData, int& width, int& height, int& depth) {
+    std::ifstream datasetFile(filePath, std::ios::binary);
+    
+    // Check if the file opened successfully
+    if (!datasetFile.is_open()) {
+        throw std::runtime_error("Unable to open the specified file.");
+    }
+    
+    width = 1000,height = 1000,depth = 200;    // Replace with actual depth
+
+    // Calculate the total number of elements in the 3D volume
+    size_t volumeSize = static_cast<size_t>(width) * height * depth;
+
+    // Resize the vector to accommodate the volume data
+    volumeData.resize(volumeSize);
+
+    // Read the binary data into the vector
+    datasetFile.read(reinterpret_cast<char*>(volumeData.data()), volumeSize * sizeof(float));
+    
+    // Close the file after reading
+    datasetFile.close();
+}
+
+std::tuple<int, int, int> calculateIndices(int x, int y, float z, int yDimension) {
+    // Compute the base index
+    int baseIndex = x + y * 1000;
+    
+    // Determine the integer part of z
+    int integerZ = static_cast<int>(z);
+    
+    // Calculate the next z-grid point
+    int nextZ = integerZ + 1;
+
+    // Calculate the final index considering the z dimension
+    int fullIndex = baseIndex + integerZ * yDimension * 1000;
+
+    return std::make_tuple(fullIndex, integerZ, nextZ);
+}
+
+void accumulateRGB(float z, const float* rgb, float op, float& r, float& g, float& b, float& accumulatedValue) {
+
+    if (z == 0) {
+        r = rgb[0];
+        g = rgb[1];
+        b = rgb[2];
+        accumulatedValue = op;
+        return;
+    } 
+
+    float factor = (1.0f - accumulatedValue) * op;
+    r += factor * rgb[0];
+    g += factor * rgb[1];
+    b += factor * rgb[2];
+    accumulatedValue += factor;
+    
+}
+
+void rayCasting(int xStart, int xEnd, int yStart, int yEnd,int zDim, 
+                const std::vector<float>& data, float stepSize, 
+                std::vector<float>& result, int& earlyTerminatedRays,float intensity[], float R[], float G[], float B[]) {
+    int yDim = 1000;
+    int xSize = xEnd - xStart + 1;
+    int ySize = yEnd - yStart + 1;
+    int totalRays = xSize * ySize;
+    earlyTerminatedRays = 0;
+
+    // Resize result vector to store RGB values for each ray
+    result.resize(totalRays * 3, 0.0f);
+
+    int x = xStart;
+    while (x <= xEnd) {
+        int y = yStart;
+        while (y <= yEnd) {
+            float accumulatedValue = 0.0f;
+            float r = 0, g = 0, b = 0;
+
+            // Initialize z for ray marching
+            float z = 0;
+            while (z < zDim) {
+                auto [idx, zIdx, zNext] = calculateIndices(x, y, z, yDim);
+                if (zNext >= zDim) break; // Avoid accessing out of bounds
+
+                float interpolatedData = interpolate3(z, zIdx, zNext, x, y, yDim, data);
+
+                std::vector<float> rgb = colorTF(interpolatedData, intensity, R, G, B);
+                float op = opacityTF(interpolatedData);
+                accumulateRGB(z, rgb.data(), op, r, g, b, accumulatedValue);
+                //TERMINATION_THRESHOLD 
+                bool terminateEarly = (accumulatedValue >= 1);
+                if (terminateEarly) {
+                    ++earlyTerminatedRays;
+                    break; // Exit the z loop
+                }
+
+                // Increment z by stepSize
+                z += stepSize;
+            }
+
+            // Compute linear index and store RGB values
+            int linearIndex = (x - xStart) * ySize + (y - yStart);
+            result[linearIndex * 3]     = b * 255.0f;       // Red channel
+            result[linearIndex * 3 + 1] = g * 255.0f;       // Green channel
+            result[linearIndex * 3 + 2] = r * 255.0f;
+
+            // Increment y
+            ++y;
+        }
+
+        // Increment x
+        ++x;
+    }
+}
+
+
+void copySubResultToFinal(int xStart, int yStart, const std::vector<float>& subResult, 
+                          std::vector<float>& finalResult, int xBoundMin, int yBoundMin, 
+                          int xSize, int ySize, int zDim) {
+    int i = 0;
+    while (i < xSize) {
+        int j = 0;
+        while (j < ySize) {
+            int xOffset = xStart - xBoundMin + i;
+            int yOffset = yStart - yBoundMin + j;
+            int finalBaseIndex = (xOffset * ySize + yOffset) * 3;
+            int subBaseIndex = (i * ySize + j) * 3;
+            
+            float value1 = subResult[subBaseIndex];
+            float value2 = subResult[subBaseIndex + 1];
+            float value3 = subResult[subBaseIndex + 2];
+            
+            finalResult[finalBaseIndex] = value1;
+            finalResult[finalBaseIndex + 1] = value2;
+            finalResult[finalBaseIndex + 2] = value3;
+            
+            ++j;
+        }
+        ++i;
+    }
+}
+
+std::tuple<int, int, int, int> calculateBounds(int xBoundMin, int xBoundMax, int yBoundMin, int yBoundMax, 
+                                               int rank, int size, int decompositionType) {
+    int xStart, xEnd, yStart, yEnd;
+
+    if (decompositionType == 1) {
+        int xChunkSize = (xBoundMax - xBoundMin + 1) / size;
+        xStart = xBoundMin + rank * xChunkSize;
+        xEnd = (rank == size - 1) ? xBoundMax : xStart + xChunkSize - 1;
+        yStart = yBoundMin;
+        yEnd = yBoundMax;
+    } else {
+        // Add logic for other decomposition types if needed
+        xStart = xBoundMin;
+        xEnd = xBoundMax;
+        yStart = yBoundMin;
+        yEnd = yBoundMax;
+    }
+
+    return std::make_tuple(xStart, xEnd, yStart, yEnd);
+}
+
+void calculateChunkBounds(int totalChunks, int chunkIndex, 
+                          int minX, int maxX, 
+                          int minY, int maxY, 
+                          int &startX, int &endX, 
+                          int &startY, int &endY) {
+    // Determine the total number of rows and columns
+    int totalRows = std::sqrt(totalChunks);
+    int totalCols = (totalChunks + totalRows - 1) / totalRows; // Ceiling division
+
+    // Calculate the dimensions of each chunk
+    int totalWidth = maxX - minX + 1;
+    int totalHeight = maxY - minY + 1;
+    int chunkWidth = (totalWidth + totalCols - 1) / totalCols; // Ceiling division
+    int chunkHeight = (totalHeight + totalRows - 1) / totalRows; // Ceiling division
+
+    // Determine the chunk's position
+    int rowIndex = chunkIndex % totalRows;
+    int colIndex = chunkIndex / totalRows;
+
+    // Calculate the start and end coordinates for the chunk
+    startX = minX + colIndex * chunkWidth;
+    endX = std::min(maxX, startX + chunkWidth - 1);
+
+    startY = minY + rowIndex * chunkHeight;
+    endY = std::min(maxY, startY + chunkHeight - 1);
+}
+
+
+// Function to perform domain decomposition and ray casting
+void volumeRendering(MPI_Comm comm, int xDim, int yDim, int zDim, const std::vector<float>& data, 
+                     float stepSize, int xBoundMin, int xBoundMax, int yBoundMin, int yBoundMax, 
+                     int decompositionType, float intensity[], float R[], float G[], float B[]) {
+    int rank, size;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    int xStart, xEnd, yStart, yEnd;
+    
+    // 1D partitioning
+    if (decompositionType == 1) {
+        std::tie(xStart, xEnd, yStart, yEnd) = calculateBounds(xBoundMin, xBoundMax, yBoundMin, yBoundMax, rank, size, decompositionType);
+    }
+    // 2D partitioning
+    else if (decompositionType == 2) {
+        int totalChunks = size;
+        int chunkIndex = rank;
+        // Compute chunk bounds
+        calculateChunkBounds(totalChunks, chunkIndex, xBoundMin, xBoundMax, yBoundMin, yBoundMax, xStart, xEnd, yStart, yEnd);
+        
+        // For debugging: print chunk boundaries (remove or comment out in production)
+        // std::cout << "Chunk " << chunkIndex << " boundaries:\n";
+        // std::cout << "X: " << xStart << " to " << xEnd << "\n";
+        // std::cout << "Y: " << yStart << " to " << yEnd << "\n";
+    }
+
+    // Allocate memory for the result of this subdomain
+    int xSize = xEnd - xStart + 1;
+    int ySize = yEnd - yStart + 1;
+    std::vector<float> subResult(xSize * ySize * 3, 0.0f);
+
+    // Perform ray casting on the subdomain
+    int earlyTerminatedRays = 0;
+    rayCasting(xStart, xEnd, yStart, yEnd, zDim, data, stepSize, subResult, earlyTerminatedRays,intensity, R, G, B);
+
+    std::ostringstream oss;
+    oss << "output_" << std::setw(3) << std::setfill('0') << rank << ".png";
+    std::string filename = oss.str();
+    
+    std::cout << "Filename: " << filename << std::endl;
+
+    saveImageFromVector(subResult,xSize,ySize, 3, filename);
+   
+
+    if (rank == 0) {
+        
+        // Initialize final result array for all processes
+        std::vector<float> finalResult((xBoundMax - xBoundMin + 1) * (yBoundMax - yBoundMin + 1) * 3, 0.0f);
+
+        // Copy local subResult directly into the finalResult
+        copySubResultToFinal(xStart, yStart, subResult, finalResult, xBoundMin, yBoundMin, xSize, ySize, zDim);
+
+        for (int i = 1; i < size; i++) {
+            int bounds[4];  // Array to store the received bounds (xStart, xEnd, yStart, yEnd)
+
+            // Receive all bounds in a single communication call
+            MPI_Recv(bounds, 4, MPI_INT, i, 0, comm, MPI_STATUS_IGNORE);
+            int recvXStart = bounds[0], recvXEnd = bounds[1], recvYStart = bounds[2], recvYEnd = bounds[3];
+
+            // Calculate the dimensions of the subdomain
+            int recvXSize = recvXEnd - recvXStart + 1;
+            int recvYSize = recvYEnd - recvYStart + 1;
+
+            // Allocate space for receiving subResult
+            std::vector<float> recvSubResult(recvXSize * recvYSize * zDim);
+
+            // Receive the subResult from process i
+            MPI_Recv(recvSubResult.data(), recvSubResult.size(), MPI_FLOAT, i, 1, comm, MPI_STATUS_IGNORE);
+
+            // Directly apply merging of subResult during the receive phase, without needing explicit copying
+            copySubResultToFinal(recvXStart, recvYStart, recvSubResult, finalResult, xBoundMin, yBoundMin, recvXSize, recvYSize, zDim);
+        }
+
+        // Get the width and height of the final image
+        int width = xBoundMax - xBoundMin + 1;
+        int height = yBoundMax - yBoundMin + 1;
+
+        // Save the final result to an image
+        saveImageFromVector(finalResult, width, height, 3, "output.png");
+
+    } else {
+
+        // Bundle xStart, xEnd, yStart, and yEnd into a single array to simplify sending
+        int bounds[4] = {xStart, xEnd, yStart, yEnd};
+
+        // Send the bounds in a single communication
+        MPI_Send(bounds, 4, MPI_INT, 0, 0, comm);
+
+        // Send the subResult data to process 0
+        MPI_Send(subResult.data(), subResult.size(), MPI_FLOAT, 0, 1, comm);
+    }
+    // Calculate the fraction of rays terminated early
+    int totalRays = xSize * ySize;
+    float fractionTerminated = static_cast<float>(earlyTerminatedRays) / totalRays;
+
+  
+    std::cout << "Rank " << rank << ": Fraction of rays terminated early = " << fractionTerminated << std::endl;
+
+    // Timing and output
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+
+    
+    double localTime = elapsed.count();
+    double maxTime;
+
+    MPI_Reduce(&localTime, &maxTime, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
+
+    if (rank == 0) {
+        // cout << "count1" << count1 << endl;
+        std::cout << "Total time taken: " << maxTime << " seconds" << std::endl;
+    }
+}
+
+
+
+int main(int argc, char* argv[]) {
+
+
+    MPI_Init(&argc, &argv);
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    cout << "argc: " << argc << endl;
+
+    const int numColors = 55;  // Size of the arrays
+    float intensity[numColors];
+    float R[numColors];
+    float G[numColors];
+    float B[numColors];
+
+    // Parse input arguments
+    std::string datasetFile = argv[1];
+    int decompositionType = std::stoi(argv[2]);
+    float stepSize = std::stof(argv[3]);
+    int xBoundMin = std::stoi(argv[4]);
+    int xBoundMax = std::stoi(argv[5]);
+    int yBoundMin = std::stoi(argv[6]);
+    int yBoundMax = std::stoi(argv[7]);
+
+    // Variables to store dataset dimensions
+    int xDim, yDim, zDim;
+    std::vector<float> data;
+
+
+    if (rank == 0) {
+        // Read the dataset on rank 0
+        readColorData("colour.txt", intensity, R, G, B);
+        // MPI_Barrier(MPI_COMM_WORLD);
+        loadVolumeData(datasetFile, data, xDim, yDim, zDim);
+
+        cout<<"Data Read Successfully"<<endl;
+
+         for (int i = 1; i < size; i++){ 
+
+            MPI_Send(intensity, numColors, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(R, numColors, MPI_FLOAT, i, 1, MPI_COMM_WORLD);
+            MPI_Send(G, numColors, MPI_FLOAT, i, 2, MPI_COMM_WORLD);
+            MPI_Send(B, numColors, MPI_FLOAT, i, 3, MPI_COMM_WORLD);
+
+            MPI_Send(&xDim, 1, MPI_INT, i, 4, MPI_COMM_WORLD);
+            MPI_Send(&yDim, 1, MPI_INT, i, 5, MPI_COMM_WORLD);
+            MPI_Send(&zDim, 1, MPI_INT, i, 6, MPI_COMM_WORLD);
+
+            MPI_Send(data.data(), xDim * yDim * zDim, MPI_FLOAT, i, 7, MPI_COMM_WORLD);
+         }
+
+    } else {
+
+        readColorData("colour.txt", intensity, R, G, B);
+
+        MPI_Recv(intensity, numColors, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(R, numColors, MPI_FLOAT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(G, numColors, MPI_FLOAT, 0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(B, numColors, MPI_FLOAT, 0, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        MPI_Recv(&xDim, 1, MPI_INT, 0, 4, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&yDim, 1, MPI_INT, 0, 5, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&zDim, 1, MPI_INT, 0, 6, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // Allocate memory for dataset and receive it
+        data.resize(xDim * yDim * zDim);
+        MPI_Recv(data.data(), xDim * yDim * zDim, MPI_FLOAT, 0, 7, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    }   
+       cout<<"Volume Rendering Started"<<endl;
+       volumeRendering(MPI_COMM_WORLD, xDim, yDim, zDim, data, stepSize, xBoundMin, xBoundMax, yBoundMin, yBoundMax, decompositionType,
+       intensity, R, G, B);
+
+    MPI_Finalize();
+
+    return 0;
+}

@@ -1,0 +1,139 @@
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <string>
+#include <opencv2/opencv.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+#include <cmath>
+#include <chrono>
+
+using namespace std;
+using namespace cv;
+
+// Function to read the dataset and reshape it
+void readDataset(const std::string& filename, std::vector<float>& data, int& xDim, int& yDim, int& zDim) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open dataset file.");
+    }
+    
+    xDim = 1000;  // Example dimensions
+    yDim = 1000;
+    zDim = 200;
+
+    size_t totalSize = static_cast<size_t>(xDim) * yDim * zDim;
+    data.resize(totalSize);
+
+    file.read(reinterpret_cast<char*>(data.data()), totalSize * sizeof(float));
+    file.close();
+}
+
+// Transfer function for opacity based on intensity
+float opacityTF(float intensity) {
+    float intensityLevels[] = {-4926.59, -1310.07, 103.00, 2593.85};
+    float opacities[] = {1.0, 0.75, 0.0, 0.05};
+
+    int n = sizeof(intensityLevels) / sizeof(intensityLevels[0]);
+
+    if (intensity <= intensityLevels[0]) return opacities[0];
+    if (intensity >= intensityLevels[n - 1]) return opacities[n - 1];
+
+    // Linear interpolation
+    for (int i = 0; i < n - 1; ++i) {
+        if (intensity >= intensityLevels[i] && intensity <= intensityLevels[i + 1]) {
+            float t = (intensity - intensityLevels[i]) / (intensityLevels[i + 1] - intensityLevels[i]);
+            return opacities[i] + t * (opacities[i + 1] - opacities[i]);
+        }
+    }
+    return 0.0f; // Default if no match
+}
+
+// Transfer function for color (RGB) based on intensity
+Vec3b colorTF(float intensity) {
+    // Example intensity values and corresponding RGB colors
+    float intensityLevels[] = {-4926.59, -1310.07, 103.00, 2593.85};
+    Vec3b colors[] = {
+        Vec3b(255, 0, 0),     // Red
+        Vec3b(0, 255, 0),     // Green
+        Vec3b(0, 0, 255),     // Blue
+        Vec3b(255, 255, 255)  // White
+    };
+
+    int n = sizeof(intensityLevels) / sizeof(intensityLevels[0]);
+
+    if (intensity <= intensityLevels[0]) return colors[0];
+    if (intensity >= intensityLevels[n - 1]) return colors[n - 1];
+
+    // Linear interpolation
+    for (int i = 0; i < n - 1; ++i) {
+        if (intensity >= intensityLevels[i] && intensity <= intensityLevels[i + 1]) {
+            float t = (intensity - intensityLevels[i]) / (intensityLevels[i + 1] - intensityLevels[i]);
+            Vec3b result;
+            for (int c = 0; c < 3; ++c) {
+                result[c] = colors[i][c] + t * (colors[i + 1][c] - colors[i][c]);
+            }
+            return result;
+        }
+    }
+    return Vec3b(0, 0, 0); // Default black if no match
+}
+
+// Function to perform ray casting
+Mat rayCastingRender(const std::vector<float>& data, int xDim, int yDim, int zDim, int width, int height, float stepSize = 1.0f) {
+    Mat renderedImage(height, width, CV_8UC3, Scalar(0, 0, 0));
+
+    // Step through each pixel of the rendered image
+    for (int px = 0; px < width; ++px) {
+        for (int py = 0; py < height; ++py) {
+            Vec3b color(0, 0, 0);
+            float accumulatedOpacity = 0.0f;
+
+            // Cast a ray through the volume
+            for (float z = 0; z < zDim && accumulatedOpacity < 1.0f; z += stepSize) {
+                int index = static_cast<int>((px / static_cast<float>(width)) * xDim) +
+                            static_cast<int>((py / static_cast<float>(height)) * yDim) * xDim +
+                            static_cast<int>(z) * xDim * yDim;
+                
+                float intensity = data[index];
+                float opacity = opacityTF(intensity);
+                Vec3b sampleColor = colorTF(intensity);
+
+                // Accumulate color and opacity using front-to-back compositing
+                for (int c = 0; c < 3; ++c) {
+                    color[c] = static_cast<unsigned char>(color[c] + (1.0f - accumulatedOpacity) * opacity * sampleColor[c]);
+                }
+                accumulatedOpacity += (1.0f - accumulatedOpacity) * opacity;
+            }
+            renderedImage.at<Vec3b>(py, px) = color;
+        }
+    }
+    return renderedImage;
+}
+
+int main() {
+    string datasetFile = "Isabel_1000x1000x200_float32.raw";
+    vector<float> dataset;
+    int xDim, yDim, zDim;
+
+    // Load dataset
+    readDataset(datasetFile, dataset, xDim, yDim, zDim);
+
+    int width = 800, height = 800;  // Resolution of the final image
+
+    // Measure time
+    auto start = chrono::high_resolution_clock::now();
+    
+    // Perform ray casting to render the volume
+    Mat renderedImage = rayCastingRender(dataset, xDim, yDim, zDim, width, height);
+
+    // Measure time taken
+    auto end = chrono::high_resolution_clock::now();
+    chrono::duration<double> duration = end - start;
+    cout << "Ray casting took " << duration.count() << " seconds" << endl;
+
+    // Display the result
+    imshow("Rendered Volume", renderedImage);
+    waitKey(0);
+    return 0;
+}
